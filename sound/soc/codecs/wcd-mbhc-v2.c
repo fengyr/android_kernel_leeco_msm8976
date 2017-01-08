@@ -31,6 +31,16 @@
 #include "wcd-mbhc-v2.h"
 #include "wcdcal-hwdep.h"
 
+#ifdef CONFIG_MACH_MSM8916_S2
+#include <linux/debugfs.h>
+
+#include "../../../drivers/misc/type-c-ti.h"
+#include "../../../drivers/misc/type-c-nxp.h"
+static struct wcd_mbhc *mbhc_data = NULL;
+bool is_type_c_headset_inserted = false;
+static bool is_headset_inserted_or_removed = false;
+#endif
+
 #define WCD_MBHC_JACK_MASK (SND_JACK_HEADSET | SND_JACK_OC_HPHL | \
 			   SND_JACK_OC_HPHR | SND_JACK_LINEOUT | \
 			   SND_JACK_MECHANICAL | SND_JACK_MICROPHONE2 | \
@@ -41,8 +51,14 @@
 				  SND_JACK_BTN_4 | SND_JACK_BTN_5 | \
 				  SND_JACK_BTN_6 | SND_JACK_BTN_7)
 #define OCP_ATTEMPT 1
+#ifdef CONFIG_MACH_MSM8916_S2
+#define HS_DETECT_PLUG_TIME_MS (1000)
+#define SPECIAL_HS_DETECT_TIME_MS (1000)
+#define MAX_BTN_PRESS_COUNT 4
+#else
 #define HS_DETECT_PLUG_TIME_MS (3 * 1000)
 #define SPECIAL_HS_DETECT_TIME_MS (2 * 1000)
+#endif
 #define MBHC_BUTTON_PRESS_THRESHOLD_MIN 250
 #define GND_MIC_SWAP_THRESHOLD 4
 #define WCD_FAKE_REMOVAL_MIN_PERIOD_MS 100
@@ -55,6 +71,11 @@
 #define WCD_MBHC_BTN_PRESS_COMPL_TIMEOUT_MS  50
 #define ANC_DETECT_RETRY_CNT 7
 #define WCD_MBHC_SPL_HS_CNT  1
+
+#ifdef CONFIG_MACH_MSM8916_S2
+static bool hs_vref_config = false;
+static bool is_headphone_inserted = false;
+#endif
 
 static int det_extn_cable_en;
 module_param(det_extn_cable_en, int,
@@ -825,6 +846,12 @@ static void wcd_mbhc_find_plug_and_report(struct wcd_mbhc *mbhc,
 		 * If Headphone was reported previously, this will
 		 * only report the mic line
 		 */
+#ifdef CONFIG_MACH_MSM8916_S2
+		if (mbhc->current_plug == MBHC_PLUG_TYPE_HEADPHONE) {
+
+			jack_type = SND_JACK_HEADPHONE;
+		}
+#endif
 		wcd_mbhc_report_plug(mbhc, 1, jack_type);
 	} else if (plug_type == MBHC_PLUG_TYPE_HIGH_HPH) {
 		if (mbhc->mbhc_cfg->detect_extn_cable) {
@@ -890,6 +917,14 @@ static int wcd_check_cross_conn(struct wcd_mbhc *mbhc)
 
 	WCD_MBHC_REG_READ(WCD_MBHC_ELECT_RESULT, swap_res);
 	pr_debug("%s: swap_res%x\n", __func__, swap_res);
+
+#ifdef CONFIG_MACH_MSM8916_S2
+	if ((0xe == swap_res) || (0xa == swap_res)) {
+		is_headphone_inserted = true;
+	} else {
+		is_headphone_inserted = false;
+	}
+#endif
 
 	/*
 	 * Read reg hphl and hphr schmitt result with cross connection
@@ -1130,6 +1165,10 @@ static void wcd_correct_swch_plug(struct work_struct *work)
 	int rc, spl_hs_count = 0;
 	int cross_conn;
 	int try = 0;
+#ifdef CONFIG_MACH_MSM8916_S2
+	int btn_press_count = 0;
+	int headphone_correct_cnt = 1;
+#endif
 
 	pr_debug("%s: enter\n", __func__);
 
@@ -1149,6 +1188,15 @@ static void wcd_correct_swch_plug(struct work_struct *work)
 
 	/* Enable HW FSM */
 	WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_FSM_EN, 1);
+
+#ifdef CONFIG_MACH_MSM8916_S2
+	WCD_MBHC_REG_READ(WCD_MBHC_HS_COMP_RESULT, hs_comp_res);
+	if ((!hs_vref_config) && (1 != hs_comp_res)) {
+		pr_info("%s: HS_VREF swap from default to 1P6V!\n", __func__);
+		WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_HS_VREF, 0x2);
+	}
+#endif
+
 	/*
 	 * Check for any button press interrupts before starting 3-sec
 	 * loop.
@@ -1162,7 +1210,15 @@ static void wcd_correct_swch_plug(struct work_struct *work)
 	if (!rc) {
 		pr_debug("%s No btn press interrupt\n", __func__);
 		if (!btn_result && !hs_comp_res)
+#ifdef CONFIG_MACH_MSM8916_S2
+			if (is_headphone_inserted) {
+				plug_type = MBHC_PLUG_TYPE_HEADPHONE;
+			} else {
+				plug_type = MBHC_PLUG_TYPE_HEADSET;
+			}
+#else
 			plug_type = MBHC_PLUG_TYPE_HEADSET;
+#endif
 		else if (!btn_result && hs_comp_res)
 			plug_type = MBHC_PLUG_TYPE_HIGH_HPH;
 		else
@@ -1191,6 +1247,9 @@ static void wcd_correct_swch_plug(struct work_struct *work)
 		goto correct_plug_type;
 	}
 
+#ifdef CONFIG_MACH_MSM8916_S2
+correct_headphone:
+#endif
 	if ((plug_type == MBHC_PLUG_TYPE_HEADSET ||
 	     plug_type == MBHC_PLUG_TYPE_HEADPHONE) &&
 	    (!wcd_swch_level_remove(mbhc))) {
@@ -1198,6 +1257,16 @@ static void wcd_correct_swch_plug(struct work_struct *work)
 		wcd_mbhc_find_plug_and_report(mbhc, plug_type);
 		WCD_MBHC_RSC_UNLOCK(mbhc);
 	}
+
+#ifdef CONFIG_MACH_MSM8916_S2
+	if (plug_type == MBHC_PLUG_TYPE_HEADPHONE) {
+		if (mbhc->mbhc_cfg->swap_gnd_mic &&
+				mbhc->mbhc_cfg->swap_gnd_mic(codec)) {
+				pr_info("%s: US_EU gpio present,flip switch\n"
+					, __func__);
+		}
+	}
+#endif
 
 correct_plug_type:
 
@@ -1218,6 +1287,9 @@ correct_plug_type:
 		if (mbhc->btn_press_intr) {
 			wcd_cancel_btn_work(mbhc);
 			mbhc->btn_press_intr = false;
+#ifdef CONFIG_MACH_MSM8916_S2
+			btn_press_count++;
+#endif
 		}
 		/* Toggle FSM */
 		WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_FSM_EN, 0);
@@ -1314,8 +1386,14 @@ correct_plug_type:
 		WCD_MBHC_REG_READ(WCD_MBHC_MIC_SCHMT_RESULT, mic_sch);
 		if (hs_comp_res && !(hphl_sch || mic_sch)) {
 			pr_debug("%s: cable is extension cable\n", __func__);
+#ifdef CONFIG_MACH_MSM8916_S2
+			pr_info("%s: cancel the MBHC_PLUG_TYPE_HIGH_HP,change into MBHC_PLUG_TYPE_HEADSET\n", __func__);
+			plug_type = MBHC_PLUG_TYPE_HEADSET;
+			goto report;
+#else
 			plug_type = MBHC_PLUG_TYPE_HIGH_HPH;
 			wrk_complete = true;
+#endif
 		} else {
 			pr_debug("%s: cable might be headset: %d\n", __func__,
 					plug_type);
@@ -1379,6 +1457,14 @@ report:
 	WCD_MBHC_RSC_LOCK(mbhc);
 	wcd_mbhc_find_plug_and_report(mbhc, plug_type);
 	WCD_MBHC_RSC_UNLOCK(mbhc);
+
+#ifdef CONFIG_MACH_MSM8916_S2
+	if ((plug_type == MBHC_PLUG_TYPE_HEADPHONE) && (headphone_correct_cnt--)) {
+		btn_press_count = 0;
+		goto correct_headphone;
+	}
+#endif
+
 enable_supply:
 	if (mbhc->mbhc_cb->mbhc_micbias_control)
 		wcd_mbhc_update_fsm_source(mbhc, plug_type);
@@ -1551,6 +1637,15 @@ static void wcd_mbhc_swch_irq_handler(struct wcd_mbhc *mbhc)
 			WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_ELECT_SCHMT_ISRC, 0);
 			wcd_mbhc_report_plug(mbhc, 0, SND_JACK_ANC_HEADPHONE);
 		}
+
+#ifdef CONFIG_MACH_MSM8916_S2
+		if (hs_vref_config) {
+			hs_vref_config = false;
+			WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_HS_VREF, 0x1);
+			pr_info("%s: HS_VREF from 1P6V to default!!\n", __func__);
+		}
+#endif
+
 	} else if (!detection_type) {
 		/* Disable external voltage source to micbias if present */
 		if (mbhc->mbhc_cb->enable_mb_source)
@@ -1582,6 +1677,40 @@ static irqreturn_t wcd_mbhc_mech_plug_detect_irq(int irq, void *data)
 	pr_debug("%s: leave %d\n", __func__, r);
 	return r;
 }
+
+#ifdef CONFIG_MACH_MSM8916_S2
+void wcd_mbhc_mech_plug_detect(void)
+{
+	struct wcd_mbhc *mbhc = mbhc_data;
+	pr_info("%s: enter\n", __func__);
+
+	if(NULL == mbhc_data)
+	{
+		pr_err("%s: bootup insert headset. \n", __func__);
+		return;
+	}
+
+	if (is_headset_inserted_or_removed == is_type_c_headset_inserted) {
+		return;
+	}
+	is_headset_inserted_or_removed	 = is_type_c_headset_inserted;
+	pr_info("%s: headset status: %s\n", __func__, is_headset_inserted_or_removed? "inserted" : "removed");
+
+	if (is_type_c_headset_inserted) {
+		gpio_direction_output(mbhc->hph_det_gpio, 0);
+	} else {
+		gpio_direction_output(mbhc->hph_det_gpio, 1);
+	}
+
+	pr_info("%s: leave \n", __func__);
+	return;
+}
+
+static void headset_bootup_insert_worker(struct work_struct *work)
+{
+	wcd_mbhc_mech_plug_detect();
+}
+#endif
 
 static int wcd_mbhc_get_button_mask(struct wcd_mbhc *mbhc)
 {
@@ -2289,6 +2418,89 @@ void wcd_mbhc_stop(struct wcd_mbhc *mbhc)
 }
 EXPORT_SYMBOL(wcd_mbhc_stop);
 
+#ifdef CONFIG_MACH_MSM8916_S2
+static int is_hph_det_gpio_support(struct snd_soc_card *card, struct wcd_mbhc *pdata)
+{
+	int ret;
+	const char *hph_det_gpio = "qcom,headset-detect-gpios";
+
+	pr_debug("%s:Enter\n", __func__);
+
+	pdata->hph_det_gpio = of_get_named_gpio(card->dev->of_node,
+				hph_det_gpio, 0);
+
+	if (pdata->hph_det_gpio < 0) {
+		pr_err("%s: missing %s in dt node\n", __func__, hph_det_gpio);
+	} else {
+		if (!gpio_is_valid(pdata->hph_det_gpio)) {
+			pr_err("%s: Invalid headset detect gpio: %d",
+				__func__, pdata->hph_det_gpio);
+			return -EINVAL;
+		} else {
+			ret = gpio_request(pdata->hph_det_gpio,
+							   "hph_det_gpio");
+			if (ret) {
+				pr_err("failed to request hph_det gpio\n");
+				return ret;
+			}
+			return 0;
+		}
+	}
+	return 0;
+}
+
+#ifdef CONFIG_DEBUG_FS
+ssize_t codec_mbhc_debug_read_user(struct file *file, char __user *buf,
+			      size_t count, loff_t *pos)
+{
+	const int size = 768;
+	char buffer[size];
+	int n = 0;
+	struct wcd_mbhc *mbhc = file->private_data;
+
+	n = scnprintf(buffer, size - n, "headset button = %d\n",
+		      mbhc->buttons_pressed);
+	n += scnprintf(buffer + n, size - n, "Insert detect insert = %d\n",
+		       !!(mbhc->current_plug));
+	buffer[n] = 0;
+
+	return simple_read_from_buffer(buf, count, pos, buffer, n);
+}
+
+static int codec_debug_open_user(struct inode *inode, struct file *file)
+{
+	file->private_data = inode->i_private;
+	return 0;
+}
+
+static const struct file_operations mbhc_debug_ops = {
+	.open = codec_debug_open_user,
+	.read = codec_mbhc_debug_read_user,
+};
+
+static void wcd9xxx_init_debugfs_user(struct wcd_mbhc *mbhc)
+{
+	mbhc->debugfs_mbhc =
+	    debugfs_create_file("wcd9xxx_mbhc", S_IFREG | S_IRUGO,
+				NULL, mbhc, &mbhc_debug_ops);
+}
+
+
+static void wcd9xxx_cleanup_debugfs_user(struct wcd_mbhc *mbhc)
+{
+	debugfs_remove(mbhc->debugfs_mbhc);
+}
+#else
+static void wcd9xxx_init_debugfs_user(struct wcd_mbhc *mbhc)
+{
+}
+
+static void wcd9xxx_cleanup_debugfs_user(struct wcd_mbhc *mbhc)
+{
+}
+#endif
+#endif
+
 /*
  * wcd_mbhc_init : initialize MBHC internal structures.
  *
@@ -2349,6 +2561,13 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_codec *codec,
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_MACH_MSM8916_S2
+	ret = is_hph_det_gpio_support(card, mbhc);
+	if (ret < 0)
+		pr_debug("%s:  doesn't support headset detect gpio\n",
+				__func__);
+#endif
+
 	/* Check if IRQ and other required callbacks are defined or not */
 	if (!mbhc_cb || !mbhc_cb->request_irq || !mbhc_cb->irq_control ||
 	    !mbhc_cb->free_irq || !mbhc_cb->map_btn_code_to_num ||
@@ -2408,6 +2627,10 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_codec *codec,
 
 	init_waitqueue_head(&mbhc->wait_btn_press);
 	mutex_init(&mbhc->codec_resource_lock);
+
+#ifdef CONFIG_MACH_MSM8916_S2
+	wcd9xxx_init_debugfs_user(mbhc);
+#endif
 
 	ret = mbhc->mbhc_cb->request_irq(codec, mbhc->intr_ids->mbhc_sw_intr,
 				  wcd_mbhc_mech_plug_detect_irq,
@@ -2483,6 +2706,14 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_codec *codec,
 		goto err_hphr_ocp_irq;
 	}
 
+#ifdef CONFIG_MACH_MSM8916_S2
+	INIT_DELAYED_WORK(&mbhc->headset_bootup_insert_work,
+		headset_bootup_insert_worker);
+	schedule_delayed_work(&mbhc->headset_bootup_insert_work,
+				msecs_to_jiffies(3000));
+	mbhc_data = mbhc;
+#endif
+
 	pr_debug("%s: leave ret %d\n", __func__, ret);
 	return ret;
 
@@ -2525,6 +2756,9 @@ void wcd_mbhc_deinit(struct wcd_mbhc *mbhc)
 	mbhc->mbhc_cb->free_irq(codec, mbhc->intr_ids->hph_right_ocp, mbhc);
 	if (mbhc->mbhc_cb && mbhc->mbhc_cb->register_notifier)
 		mbhc->mbhc_cb->register_notifier(codec, &mbhc->nblock, false);
+#ifdef CONFIG_MACH_MSM8916_S2
+	wcd9xxx_cleanup_debugfs_user(mbhc);
+#endif
 	mutex_destroy(&mbhc->codec_resource_lock);
 }
 EXPORT_SYMBOL(wcd_mbhc_deinit);

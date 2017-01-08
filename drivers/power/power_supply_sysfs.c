@@ -31,6 +31,11 @@
  * (as a macro let's say).
  */
 
+#ifdef CONFIG_MACH_MSM8916_S2
+extern bool is_detecting_usb_type;
+extern bool usb_enumeration_failed;
+#endif
+
 #define POWER_SUPPLY_ATTR(_name)					\
 {									\
 	.attr = { .name = #_name },					\
@@ -214,6 +219,9 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(resistance_capacitive),
 	POWER_SUPPLY_ATTR(resistance_id),
 	POWER_SUPPLY_ATTR(resistance_now),
+#ifdef CONFIG_MACH_MSM8916_S2
+	POWER_SUPPLY_ATTR(le_quick_charge_mode),
+#endif
 	/* Local extensions */
 	POWER_SUPPLY_ATTR(usb_hc),
 	POWER_SUPPLY_ATTR(usb_otg),

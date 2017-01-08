@@ -308,6 +308,17 @@ struct qpnp_wled {
 	bool prev_state;
 };
 
+#ifdef CONFIG_MACH_MSM8916_S2
+enum led_id{
+	GREEN = 0,
+	RED,
+	BLUE,
+};
+extern int aw2013_sleep_led;
+extern int aw2013_usb_state;
+extern void aw2013_set_RGB_led_brightness(int led_num,int brightness);
+#endif
+
 /* helper to read a pmic register */
 static int qpnp_wled_read_reg(struct qpnp_wled *wled, u8 *data, u16 addr)
 {
@@ -759,11 +770,18 @@ static struct device_attribute qpnp_wled_attrs[] = {
 			qpnp_wled_ramp_step_store),
 };
 
+#ifdef CONFIG_MACH_MSM8916_S2
+static int qpnp_wled_config(struct qpnp_wled *wled);
+#endif
+
 /* worker for setting wled brightness */
 static void qpnp_wled_work(struct work_struct *work)
 {
 	struct qpnp_wled *wled;
 	int level, rc;
+#ifdef CONFIG_MACH_MSM8916_S2
+	static int wled_config_flag = 0;
+#endif
 
 	wled = container_of(work, struct qpnp_wled, work);
 
@@ -772,6 +790,12 @@ static void qpnp_wled_work(struct work_struct *work)
 	mutex_lock(&wled->lock);
 
 	if (level) {
+#ifdef CONFIG_MACH_MSM8916_S2
+		if(wled_config_flag==0){
+			qpnp_wled_config(wled);
+			wled_config_flag = 1;
+		}
+#endif
 		rc = qpnp_wled_set_level(wled, level);
 		if (rc) {
 			dev_err(&wled->spmi->dev, "wled set level failed\n");
@@ -788,6 +812,22 @@ static void qpnp_wled_work(struct work_struct *work)
 			goto unlock_mutex;
 		}
 	}
+#ifdef CONFIG_MACH_MSM8916_S2
+	if(aw2013_sleep_led && !aw2013_usb_state)
+	{
+		//printk("sleep led feature enable\n");
+		if(level)
+		{
+			aw2013_set_RGB_led_brightness(RED,0);
+			//printk("sleep led open\n");
+		}
+		else
+		{
+			aw2013_set_RGB_led_brightness(RED,255);
+			//printk("sleep led close\n");
+		}
+	}
+#endif
 
 	wled->prev_state = !!level;
 unlock_mutex:
@@ -1668,13 +1708,13 @@ static int qpnp_wled_probe(struct spmi_device *spmi)
 		dev_err(&spmi->dev, "DT parsing failed\n");
 		return rc;
 	}
-
+#ifndef CONFIG_MACH_MSM8916_S2
 	rc = qpnp_wled_config(wled);
 	if (rc) {
 		dev_err(&spmi->dev, "wled config failed\n");
 		return rc;
 	}
-
+#endif
 	mutex_init(&wled->lock);
 	INIT_WORK(&wled->work, qpnp_wled_work);
 	wled->ramp_ms = QPNP_WLED_RAMP_DLY_MS;
@@ -1699,7 +1739,9 @@ static int qpnp_wled_probe(struct spmi_device *spmi)
 			goto sysfs_fail;
 		}
 	}
-
+#ifdef CONFIG_MACH_MSM8916_S2
+	qpnp_wled_set(&wled->cdev,WLED_MAX_LEVEL_4095);
+#endif
 	return 0;
 
 sysfs_fail:

@@ -31,6 +31,10 @@ enum {
 	WCD_MBHC_ELEC_HS_REM,
 };
 
+#ifdef CONFIG_MACH_MSM8916_S2
+extern bool is_type_c_headset_inserted;
+#endif
+
 struct wcd_mbhc;
 enum wcd_mbhc_register_function {
 	WCD_MBHC_L_DET_EN,
@@ -392,10 +396,16 @@ struct wcd_mbhc {
 	bool is_extn_cable;
 	bool skip_imped_detection;
 	bool is_btn_already_regd;
+#ifdef CONFIG_MACH_MSM8916_S2
+	int hph_det_gpio;
+#endif
 
 	struct snd_soc_codec *codec;
 	/* Work to perform MBHC Firmware Read */
 	struct delayed_work mbhc_firmware_dwork;
+#ifdef CONFIG_MACH_MSM8916_S2
+	struct delayed_work headset_bootup_insert_work;
+#endif
 	const struct firmware *mbhc_fw;
 	struct firmware_cal *mbhc_cal;
 
@@ -429,6 +439,11 @@ struct wcd_mbhc {
 	struct mutex hphr_pa_lock;
 
 	unsigned long intr_status;
+#ifdef CONFIG_MACH_MSM8916_S2
+#ifdef CONFIG_DEBUG_FS
+	struct dentry *debugfs_mbhc;
+#endif
+#endif
 };
 #define WCD_MBHC_CAL_SIZE(buttons, rload) ( \
 	sizeof(struct wcd_mbhc_general_cfg) + \
@@ -495,6 +510,9 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_codec *codec,
 int wcd_mbhc_get_impedance(struct wcd_mbhc *mbhc, uint32_t *zl,
 			   uint32_t *zr);
 void wcd_mbhc_deinit(struct wcd_mbhc *mbhc);
+#ifdef CONFIG_MACH_MSM8916_S2
+void wcd_mbhc_mech_plug_detect(void);
+#endif
 #else
 static inline void wcd_mbhc_stop(struct wcd_mbhc *mbhc)
 {

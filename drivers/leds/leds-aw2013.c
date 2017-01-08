@@ -64,6 +64,19 @@ struct aw2013_led {
 	bool poweron;
 };
 
+#ifdef CONFIG_MACH_MSM8916_S2
+struct aw2013_led *g_led;
+
+int aw2013_sleep_led = 0;
+EXPORT_SYMBOL(aw2013_sleep_led);
+
+int aw2013_usb_state = 0;
+EXPORT_SYMBOL(aw2013_usb_state);
+
+bool userspace_led_ctl= 0;
+#endif
+
+
 static int aw2013_write(struct aw2013_led *led, u8 reg, u8 val)
 {
 	return i2c_smbus_write_byte_data(led->client, reg, val);
@@ -93,12 +106,15 @@ static int aw2013_power_on(struct aw2013_led *led, bool on)
 			return rc;
 		}
 
+#ifndef CONFIG_MACH_MSM8916_S2
 		rc = regulator_enable(led->vcc);
 		if (rc) {
 			dev_err(&led->client->dev,
 				"Regulator vcc enable failed rc=%d\n", rc);
 			goto fail_enable_reg;
 		}
+#endif
+
 		led->poweron = true;
 	} else {
 		rc = regulator_disable(led->vdd);
@@ -108,14 +124,18 @@ static int aw2013_power_on(struct aw2013_led *led, bool on)
 			return rc;
 		}
 
+#ifndef CONFIG_MACH_MSM8916_S2
 		rc = regulator_disable(led->vcc);
 		if (rc) {
 			dev_err(&led->client->dev,
 				"Regulator vcc disable failed rc=%d\n", rc);
 			goto fail_disable_reg;
 		}
+#endif
 		led->poweron = false;
 	}
+
+#ifndef CONFIG_MACH_MSM8916_S2
 	return rc;
 
 fail_enable_reg:
@@ -132,6 +152,7 @@ fail_disable_reg:
 		dev_err(&led->client->dev,
 			"Regulator vdd enable failed rc=%d\n", rc);
 
+#endif
 	return rc;
 }
 
@@ -159,6 +180,7 @@ static int aw2013_power_init(struct aw2013_led *led, bool on)
 			}
 		}
 
+#ifndef CONFIG_MACH_MSM8916_S2
 		led->vcc = regulator_get(&led->client->dev, "vcc");
 		if (IS_ERR(led->vcc)) {
 			rc = PTR_ERR(led->vcc);
@@ -176,24 +198,29 @@ static int aw2013_power_init(struct aw2013_led *led, bool on)
 				goto reg_vcc_put;
 			}
 		}
+#endif
 	} else {
 		if (regulator_count_voltages(led->vdd) > 0)
 			regulator_set_voltage(led->vdd, 0, AW2013_VDD_MAX_UV);
 
 		regulator_put(led->vdd);
 
+#ifndef CONFIG_MACH_MSM8916_S2
 		if (regulator_count_voltages(led->vcc) > 0)
 			regulator_set_voltage(led->vcc, 0, AW2013_VI2C_MAX_UV);
 
 		regulator_put(led->vcc);
+#endif
 	}
 	return 0;
 
+#ifndef CONFIG_MACH_MSM8916_S2
 reg_vcc_put:
 	regulator_put(led->vcc);
 reg_vdd_set_vtg:
 	if (regulator_count_voltages(led->vdd) > 0)
 		regulator_set_voltage(led->vdd, 0, AW2013_VDD_MAX_UV);
+#endif
 reg_vdd_put:
 	regulator_put(led->vdd);
 	return rc;
@@ -303,7 +330,9 @@ static void aw2013_set_brightness(struct led_classdev *cdev,
 {
 	struct aw2013_led *led = container_of(cdev, struct aw2013_led, cdev);
 	led->cdev.brightness = brightness;
-
+#ifdef CONFIG_MACH_MSM8916_S2
+	userspace_led_ctl = 1;
+#endif
 	schedule_work(&led->brightness_work);
 }
 
@@ -383,13 +412,27 @@ static int aw_2013_check_chipid(struct aw2013_led *led)
 {
 	u8 val;
 
+#ifndef CONFIG_MACH_MSM8916_S2
 	aw2013_write(led, AW_REG_RESET, AW_LED_RESET_MASK);
 	usleep(AW_LED_RESET_DELAY);
+#endif
 	aw2013_read(led, AW_REG_RESET, &val);
 	if (val == AW2013_CHIPID)
 		return 0;
 	else
+#ifdef CONFIG_MACH_MSM8916_S2
+	{
+		aw2013_write(led, AW_REG_RESET, AW_LED_RESET_MASK);
+		usleep(AW_LED_RESET_DELAY);
+		aw2013_read(led, AW_REG_RESET, &val);
+		if (val == AW2013_CHIPID)
+			return 0;
+		else
+			return -EINVAL;
+	}
+#else
 		return -EINVAL;
+#endif
 }
 
 static int aw2013_led_err_handle(struct aw2013_led *led_array,
@@ -540,6 +583,31 @@ free_err:
 	return rc;
 }
 
+#ifdef CONFIG_MACH_MSM8916_S2
+void aw2013_set_RGB_led_brightness(int led_num,int brightness)
+{
+	u8 val;
+    if (brightness > 0) {
+		if (brightness > 255)
+			brightness = 255;
+		aw2013_write(g_led, AW_REG_GLOBAL_CONTROL,
+			AW_LED_MOUDLE_ENABLE_MASK);
+		aw2013_write(g_led, AW_REG_LED_CONFIG_BASE + led_num,
+			1);
+		aw2013_write(g_led, AW_REG_LED_BRIGHTNESS_BASE + led_num,
+			brightness);
+		aw2013_read(g_led, AW_REG_LED_ENABLE, &val);
+		aw2013_write(g_led, AW_REG_LED_ENABLE, val | (1 << led_num));
+		pr_debug("aw2013 %d LED brightness=%d\n",led_num,brightness);
+	} else {
+		aw2013_read(g_led, AW_REG_LED_ENABLE, &val);
+		aw2013_write(g_led, AW_REG_LED_ENABLE, val & (~(1 << led_num)));
+		pr_debug("aw2013 %d LED close\n",led_num);
+	}
+}
+EXPORT_SYMBOL(aw2013_set_RGB_led_brightness);
+#endif
+
 static int aw2013_led_probe(struct i2c_client *client,
 			   const struct i2c_device_id *id)
 {
@@ -562,6 +630,9 @@ static int aw2013_led_probe(struct i2c_client *client,
 		dev_err(&client->dev, "Unable to allocate memory\n");
 		return -ENOMEM;
 	}
+#ifdef CONFIG_MACH_MSM8916_S2
+	g_led = led_array;
+#endif
 	led_array->client = client;
 	led_array->num_leds = num_leds;
 
@@ -576,7 +647,9 @@ static int aw2013_led_probe(struct i2c_client *client,
 	ret = aw2013_led_parse_child_node(led_array, node);
 	if (ret) {
 		dev_err(&client->dev, "parsed node error\n");
+#ifndef CONFIG_MACH_MSM8916_S2
 		goto free_led_arry;
+#endif
 	}
 
 	i2c_set_clientdata(client, led_array);
@@ -617,6 +690,27 @@ static int aw2013_led_remove(struct i2c_client *client)
 	return 0;
 }
 
+#ifdef CONFIG_MACH_MSM8916_S2
+static int aw2013_suspend(struct device *dev)
+{
+	struct aw2013_led *led_array = i2c_get_clientdata(g_led->client);
+	if(aw2013_sleep_led)
+	{
+		aw2013_set_RGB_led_brightness(1,0);
+	}
+	//if(g_blinking == 0)
+	if((led_array[0].cdev.brightness || led_array[1].cdev.brightness||led_array[2].cdev.brightness) == 0)
+	{
+		aw2013_write(g_led, AW_REG_RESET, AW_LED_RESET_MASK);
+	}
+    return 0;
+}
+
+static const struct dev_pm_ops aw2013_pm_ops = {
+    .suspend        = aw2013_suspend,
+};
+#endif
+
 static const struct i2c_device_id aw2013_led_id[] = {
 	{"aw2013_led", 0},
 	{},
@@ -636,6 +730,9 @@ static struct i2c_driver aw2013_led_driver = {
 		.name = "aw2013_led",
 		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(aw2013_match_table),
+#ifdef CONFIG_MACH_MSM8916_S2
+		.pm = &aw2013_pm_ops,
+#endif
 	},
 	.id_table = aw2013_led_id,
 };
@@ -652,5 +749,9 @@ static void __exit aw2013_led_exit(void)
 }
 module_exit(aw2013_led_exit);
 
+#ifdef CONFIG_MACH_MSM8916_S2
+module_param(aw2013_sleep_led, int, 0664);
+MODULE_PARM_DESC(aw2013_sleep_led, "An visible int under sysfs");
+#endif
 MODULE_DESCRIPTION("AWINIC aw2013 LED driver");
 MODULE_LICENSE("GPL v2");
