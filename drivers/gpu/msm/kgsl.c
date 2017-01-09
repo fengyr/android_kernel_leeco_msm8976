@@ -371,7 +371,6 @@ kgsl_mem_entry_untrack_gpuaddr(struct kgsl_process_private *process,
 		rb_erase(&entry->node, &entry->priv->mem_rb);
 	}
 }
-
 static void kgsl_mem_entry_commit_mem_list(struct kgsl_process_private *process,
 				struct kgsl_mem_entry *entry)
 {
